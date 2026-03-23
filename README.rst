@@ -10,6 +10,24 @@ Portable Multi-Cloud Initialization Service
 * License:        Apache 2.0
 
 
+Fork Notice
+-----------
+
+This repository is a downstream fork of the upstream Cloudbase-Init project:
+
+https://github.com/cloudbase/cloudbase-init
+
+We maintain this fork in order to support our Windows VM provisioning workflow
+and to publish the exact code that is deployed on customer systems for
+transparency and reviewability.
+
+The goal is to keep the fork as close as possible to upstream while carrying a
+small set of targeted changes required by our environment.
+
+For the original project documentation and general Cloudbase-Init usage, please
+refer to the upstream repository.
+
+
 Downloads
 ---------
 
