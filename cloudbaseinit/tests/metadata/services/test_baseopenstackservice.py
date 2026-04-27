@@ -520,14 +520,35 @@ class TestBaseOpenStackService(unittest.TestCase):
 
     @mock.patch(MODPATH + ".BaseOpenStackService._get_network_data")
     @mock.patch(MODPATH + ".LOG.info")
-    def test_get_network_details_v2_no_metadata(self, mock_log_exception,
+    @mock.patch(MODPATH + ".BaseOpenStackService._get_meta_data")
+    def test_get_network_details_v2_no_metadata(self, mock_get_meta_data,
+                                                mock_log_exception,
                                                 mock_get_network_data):
         mock_get_network_data.side_effect = (
             base.NotExistingMetadataException('failed to get metadata'))
+        mock_get_meta_data.return_value = {}
         network_details = self._service.get_network_details_v2()
 
         self.assertIsNone(network_details)
         self.assertTrue(mock_log_exception.called)
+
+    @mock.patch(MODPATH + ".BaseOpenStackService.get_content")
+    @mock.patch(MODPATH + ".BaseOpenStackService._get_network_data")
+    @mock.patch(MODPATH + ".BaseOpenStackService._get_meta_data")
+    def test_get_network_details_v2_falls_back_to_debian_config(
+            self, mock_get_meta_data, mock_get_network_data,
+            mock_get_content):
+        mock_get_network_data.side_effect = (
+            base.NotExistingMetadataException('failed to get metadata'))
+        mock_get_meta_data.return_value = {
+            "network_config": self._fake_network_config}
+        mock_get_content.return_value = self._fake_content
+
+        network_details = self._service.get_network_details_v2()
+
+        mock_get_content.assert_called_once_with("network")
+        self.assertEqual(3, len(network_details.links))
+        self.assertEqual(6, len(network_details.networks))
 
     @mock.patch(MODPATH +
                 ".BaseOpenStackService._get_meta_data")

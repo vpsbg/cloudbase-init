@@ -44,6 +44,10 @@ class TestExtendVolumesPlugin(unittest.TestCase):
             response = self._extend_volumes._get_volumes_to_extend()
             self.assertEqual([1], response)
 
+    def test_execution_stage(self):
+        self.assertEqual(base.PLUGIN_STAGE_PRE_METADATA_DISCOVERY,
+                         self._extend_volumes.execution_stage)
+
     @mock.patch("cloudbaseinit.utils.windows.storage.factory"
                 ".get_storage_manager")
     @mock.patch("cloudbaseinit.plugins.windows.extendvolumes"

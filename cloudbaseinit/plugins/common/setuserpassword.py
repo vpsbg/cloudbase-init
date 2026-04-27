@@ -26,7 +26,6 @@ LOG = oslo_logging.getLogger(__name__)
 
 
 class SetUserPasswordPlugin(base.BasePlugin):
-
     def _encrypt_password(self, ssh_pub_key, password):
         cm = crypt.CryptManager()
         return cm.public_encrypt(ssh_pub_key, password)
@@ -106,10 +105,9 @@ class SetUserPasswordPlugin(base.BasePlugin):
     def execute(self, service, shared_data):
         # TODO(alexpilotti): The username selection logic must be set in the
         # CreateUserPlugin instead if using CONF.username
+        osutils = osutils_factory.get_os_utils()
         user_name = shared_data.get(plugin_constant.SHARED_DATA_USERNAME,
                                     CONF.username)
-
-        osutils = osutils_factory.get_os_utils()
         if osutils.user_exists(user_name):
             password = self._set_password(service, osutils,
                                           user_name, shared_data)

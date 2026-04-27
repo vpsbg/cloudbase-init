@@ -37,7 +37,7 @@ By default, only a subset of plugins is executed. The plugins are:
 .. code:: python
 
     [DEFAULT]
-    plugins = cloudbaseinit.plugins.common.mtu.MTUPlugin, cloudbaseinit.plugins.windows.ntpclient.NTPClientPlugin, cloudbaseinit.plugins.common.sethostname.SetHostNamePlugin, cloudbaseinit.plugins.windows.createuser.CreateUserPlugin, cloudbaseinit.plugins.common.networkconfig.NetworkConfigPlugin, cloudbaseinit.plugins.windows.licensing.WindowsLicensingPlugin, cloudbaseinit.plugins.common.sshpublickeys.SetUserSSHPublicKeysPlugin, cloudbaseinit.plugins.windows.extendvolumes.ExtendVolumesPlugin, cloudbaseinit.plugins.common.userdata.UserDataPlugin, cloudbaseinit.plugins.common.setuserpassword.SetUserPasswordPlugin, cloudbaseinit.plugins.windows.winrmlistener.ConfigWinRMListenerPlugin, cloudbaseinit.plugins.windows.winrmcertificateauth.ConfigWinRMCertificateAuthPlugin, cloudbaseinit.plugins.common.localscripts.LocalScriptsPlugin
+    plugins = cloudbaseinit.plugins.common.mtu.MTUPlugin, cloudbaseinit.plugins.windows.ntpclient.NTPClientPlugin, cloudbaseinit.plugins.common.sethostname.SetHostNamePlugin, cloudbaseinit.plugins.windows.createuser.CreateUserPlugin, cloudbaseinit.plugins.common.networkconfig.NetworkConfigPlugin, cloudbaseinit.plugins.windows.runonce.RunOncePlugin, cloudbaseinit.plugins.windows.licensing.WindowsLicensingPlugin, cloudbaseinit.plugins.common.sshpublickeys.SetUserSSHPublicKeysPlugin, cloudbaseinit.plugins.windows.extendvolumes.ExtendVolumesPlugin, cloudbaseinit.plugins.common.userdata.UserDataPlugin, cloudbaseinit.plugins.common.setuserpassword.SetUserPasswordPlugin, cloudbaseinit.plugins.windows.winrmlistener.ConfigWinRMListenerPlugin, cloudbaseinit.plugins.windows.winrmcertificateauth.ConfigWinRMCertificateAuthPlugin, cloudbaseinit.plugins.common.localscripts.LocalScriptsPlugin
 
 
 A custom list of plugins can be specified through the `plugins` option in the configuration file.
@@ -178,8 +178,26 @@ Notes:
       value.
 
 
-Volume expanding (MAIN)
--------------------------
+Run-Once Reset (PRE_METADATA_DISCOVERY)
+-----------------------------------------
+
+.. class:: cloudbaseinit.plugins.windows.runonce.RunOncePlugin
+
+Tracks the current SMBIOS UUID and optionally resets the persistent run-once
+state for selected plugins when a cloned disk is attached to a different VM.
+
+If the SMBIOS UUID changed since the previous boot and the SMBIOS serial matches
+`run_once_reset_serial`, all plugins listed in `run_only_once_for` are unlocked
+so they can run again.
+
+Config options:
+
+    * run_only_once_for (list of strings: [])
+    * run_once_reset_serial (string: None)
+
+
+Volume expanding (PRE_METADATA_DISCOVERY)
+-------------------------------------------
 
 .. class:: cloudbaseinit.plugins.windows.extendvolumes.ExtendVolumesPlugin
 
@@ -533,4 +551,3 @@ Notes:
 
     * Requires support in the metadata service.
       Azure metadata service should provide the agent package provisioning data.
-

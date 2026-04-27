@@ -661,29 +661,62 @@ class TestWindowsUtils(testutils.CloudbaseInitTestBase):
             self._test_set_static_network_config_new(ipv6=ipv6)
 
     @mock.patch('cloudbaseinit.osutils.windows.WindowsUtils'
+                '.execute_powershell_command')
+    @mock.patch('cloudbaseinit.osutils.windows.WindowsUtils'
                 '._fix_network_adapter_dhcp')
     def _test_set_static_network_config_new(self,
+                                            mock_execute_powershell_command,
                                             mock_fix_network_adapter_dhcp,
-                                            ipv6):
+                                            ipv6,
+                                            onlink_gateway=False):
         conn = self._wmi_mock.WMI.return_value
+        nic_name = 'fake NIC'
+        dns_server = '8.8.8.8'
+
         if ipv6:
-            mock.sentinel.address = "2001:db8::3"
-            mock.sentinel.prefix_len_or_netmask = 64
+            address = "2001:db8::3"
+            prefix_len_or_netmask = 64
+            gateway = "fe80::1"
+            expected_route_calls = [
+                mock.call(
+                    "New-NetRoute -InterfaceAlias 'fake NIC' "
+                    "-DestinationPrefix '::/0' "
+                    "-NextHop 'fe80::1' -ErrorAction Stop")
+            ]
+        elif onlink_gateway:
+            address = "192.0.2.10"
+            prefix_len_or_netmask = "255.255.255.255"
+            gateway = "172.16.0.1"
+            expected_route_calls = [
+                mock.call(
+                    "New-NetRoute -InterfaceAlias 'fake NIC' "
+                    "-DestinationPrefix '172.16.0.1/32' "
+                    "-NextHop '0.0.0.0' -ErrorAction Stop "
+                    "-RouteMetric 1"),
+                mock.call(
+                    "New-NetRoute -InterfaceAlias 'fake NIC' "
+                    "-DestinationPrefix '0.0.0.0/0' "
+                    "-NextHop '172.16.0.1' -ErrorAction Stop")
+            ]
         else:
-            mock.sentinel.address = "10.10.10.10"
-            mock.sentinel.prefix_len_or_netmask = "255.255.255.0"
+            address = "10.10.10.10"
+            prefix_len_or_netmask = "255.255.255.0"
+            gateway = "10.10.10.1"
+            expected_route_calls = [
+                mock.call(
+                    "New-NetRoute -InterfaceAlias 'fake NIC' "
+                    "-DestinationPrefix '0.0.0.0/0' "
+                    "-NextHop '10.10.10.1' -ErrorAction Stop")
+            ]
+        mock_execute_powershell_command.return_value = (b'', b'', 0)
 
-        adapter = mock.Mock()
-        adapter.GUID = mock.sentinel.adapter_guid
-        conn.Win32_NetworkAdapter.return_value = [adapter]
-
-        if netaddr.valid_ipv6(mock.sentinel.address):
+        if netaddr.valid_ipv6(address):
             family = self.windows_utils.AF_INET6
         else:
             family = self.windows_utils.AF_INET
 
         existing_adapter = mock.Mock()
-        existing_adapter.IPAddress = mock.sentinel.address
+        existing_adapter.IPAddress = address
         conn.MSFT_NetIPAddress.return_value = [existing_adapter]
 
         existing_route = mock.Mock()
@@ -694,39 +727,108 @@ class TestWindowsUtils(testutils.CloudbaseInitTestBase):
         conn.MSFT_DnsClientServerAddress.return_value = [dns_client]
 
         self._winutils.set_static_network_config(
-            mock.sentinel.nick_name, mock.sentinel.address,
-            mock.sentinel.prefix_len_or_netmask, mock.sentinel.gateway,
-            [mock.sentinel.dns])
+            nic_name, address, prefix_len_or_netmask, gateway, [dns_server])
 
         mock_fix_network_adapter_dhcp.assert_called_once_with(
-            mock.sentinel.nick_name, False, family)
+            nic_name, False, family)
 
         conn.MSFT_NetIPAddress.assert_called_once_with(
-            AddressFamily=family, InterfaceAlias=mock.sentinel.nick_name)
+            AddressFamily=family, InterfaceAlias=nic_name)
         existing_adapter.Delete_.assert_called_once_with()
 
         conn.MSFT_NetRoute.assert_called_once_with(
-            AddressFamily=family, InterfaceAlias=mock.sentinel.nick_name)
+            AddressFamily=family, InterfaceAlias=nic_name)
         existing_route.Delete_.assert_called_once_with()
 
         ip_network = netaddr.IPNetwork(
-            u"%s/%s" % (
-                mock.sentinel.address, mock.sentinel.prefix_len_or_netmask))
+            u"%s/%s" % (address, prefix_len_or_netmask))
         prefix_len = ip_network.prefixlen
 
         conn.MSFT_NetIPAddress.create.assert_called_once_with(
-            AddressFamily=family, InterfaceAlias=mock.sentinel.nick_name,
-            IPAddress=mock.sentinel.address, PrefixLength=prefix_len,
-            DefaultGateway=mock.sentinel.gateway)
+            AddressFamily=family, InterfaceAlias=nic_name,
+            IPAddress=address, PrefixLength=prefix_len)
+
+        self.assertEqual(expected_route_calls,
+                         mock_execute_powershell_command.call_args_list)
 
         custom_options = [{
             u'name': u'ServerAddresses',
             u'value_type': self._mi_mock.MI_ARRAY | self._mi_mock.MI_STRING,
-            u'value': [mock.sentinel.dns]
+            u'value': [dns_server]
         }]
         operation_options = {u'custom_options': custom_options}
         dns_client.put.assert_called_once_with(
             operation_options=operation_options)
+
+    @mock.patch('cloudbaseinit.osutils.windows.WindowsUtils'
+                '.check_os_version')
+    @mock.patch('cloudbaseinit.osutils.windows.WindowsUtils'
+                '.execute_powershell_command')
+    @mock.patch('cloudbaseinit.osutils.windows.WindowsUtils'
+                '._fix_network_adapter_dhcp')
+    def test_set_static_network_configs_new(
+            self, mock_fix_network_adapter_dhcp,
+            mock_execute_powershell_command, mock_check_os_version):
+        mock_check_os_version.return_value = True
+        mock_execute_powershell_command.return_value = (b'', b'', 0)
+        conn = self._wmi_mock.WMI.return_value
+        nic_name = 'fake NIC'
+        dns_server = '8.8.8.8'
+        network_configs = [
+            {"address": "91.92.66.16", "prefix_len": "32",
+             "gateway": "172.16.0.1"},
+            {"address": "91.92.66.10", "prefix_len": "32",
+             "gateway": None},
+            {"address": "87.120.37.168", "prefix_len": "32",
+             "gateway": None},
+        ]
+
+        existing_adapter = mock.Mock()
+        existing_adapter.IPAddress = "10.0.0.1"
+        conn.MSFT_NetIPAddress.return_value = [existing_adapter]
+        existing_route = mock.Mock()
+        existing_route.DestinationPrefix = "0.0.0.0/0"
+        conn.MSFT_NetRoute.return_value = [existing_route]
+        dns_client = mock.Mock()
+        conn.MSFT_DnsClientServerAddress.return_value = [dns_client]
+
+        self._winutils.set_static_network_configs(
+            nic_name, network_configs, [dns_server])
+
+        mock_fix_network_adapter_dhcp.assert_called_once_with(
+            nic_name, False, self.windows_utils.AF_INET)
+        existing_adapter.Delete_.assert_called_once_with()
+        existing_route.Delete_.assert_called_once_with()
+        conn.MSFT_NetIPAddress.create.assert_has_calls([
+            mock.call(AddressFamily=self.windows_utils.AF_INET,
+                      InterfaceAlias=nic_name, IPAddress="91.92.66.16",
+                      PrefixLength=32),
+            mock.call(AddressFamily=self.windows_utils.AF_INET,
+                      InterfaceAlias=nic_name, IPAddress="91.92.66.10",
+                      PrefixLength=32),
+            mock.call(AddressFamily=self.windows_utils.AF_INET,
+                      InterfaceAlias=nic_name, IPAddress="87.120.37.168",
+                      PrefixLength=32),
+        ])
+        self.assertEqual([
+            mock.call(
+                "New-NetRoute -InterfaceAlias 'fake NIC' "
+                "-DestinationPrefix '172.16.0.1/32' "
+                "-NextHop '0.0.0.0' -ErrorAction Stop "
+                "-RouteMetric 1"),
+            mock.call(
+                "New-NetRoute -InterfaceAlias 'fake NIC' "
+                "-DestinationPrefix '0.0.0.0/0' "
+                "-NextHop '172.16.0.1' -ErrorAction Stop")
+        ], mock_execute_powershell_command.call_args_list)
+
+        custom_options = [{
+            u'name': u'ServerAddresses',
+            u'value_type': self._mi_mock.MI_ARRAY | self._mi_mock.MI_STRING,
+            u'value': [dns_server]
+        }]
+        dns_client.put.assert_called_once_with(
+            operation_options={u'custom_options': custom_options})
 
     def _test_set_static_network_config_legacy(self, adapter, static_val,
                                                gateway_val, dns_val):
@@ -830,6 +932,14 @@ class TestWindowsUtils(testutils.CloudbaseInitTestBase):
 
     def test_set_static_network_config_ipv6(self):
         self._test_set_static_network_config(ipv6=True)
+
+    @mock.patch('cloudbaseinit.osutils.windows.WindowsUtils'
+                '.check_os_version')
+    def test_set_static_network_config_ipv4_onlink_gateway(
+            self, mock_check_os_version):
+        mock_check_os_version.return_value = True
+        self._test_set_static_network_config_new(
+            ipv6=False, onlink_gateway=True)
 
     @mock.patch('cloudbaseinit.osutils.windows.WindowsUtils'
                 '._get_network_msft_adapter')
@@ -1999,6 +2109,25 @@ class TestWindowsUtils(testutils.CloudbaseInitTestBase):
 
     def test_execute_powershell_script_sysnative_nano(self):
         self._test_execute_powershell_script(ret_val=True, nano=True)
+
+    @mock.patch('cloudbaseinit.osutils.windows.WindowsUtils'
+                '.execute_powershell_command')
+    def test_get_smbios_uuid_serial(self, mock_execute_powershell_command):
+        mock_execute_powershell_command.return_value = (
+            b'fake-uuid\r\nRESETAUTH', b'', 0)
+
+        response = self._winutils.get_smbios_uuid_serial()
+
+        self.assertEqual(('fake-uuid', 'RESETAUTH'), response)
+
+    @mock.patch('cloudbaseinit.osutils.windows.WindowsUtils'
+                '.execute_powershell_command')
+    def test_get_smbios_uuid_serial_failure(self,
+                                            mock_execute_powershell_command):
+        mock_execute_powershell_command.return_value = (b'', b'boom', 1)
+
+        self.assertRaises(exception.CloudbaseInitException,
+                          self._winutils.get_smbios_uuid_serial)
 
     @mock.patch('cloudbaseinit.utils.windows.network.get_adapter_addresses')
     def test_get_dhcp_hosts_in_use(self, mock_get_adapter_addresses):

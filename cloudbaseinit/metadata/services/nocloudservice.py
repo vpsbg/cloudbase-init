@@ -717,9 +717,11 @@ class NoCloudConfigDriveService(baseconfigdrive.BaseConfigDriveService):
                 return
         except base.NotExistingMetadataException:
             LOG.info("V2 network metadata not found")
-            return
         except serialization.YamlParserConfigError:
             LOG.exception("V2 network metadata could not be deserialized")
-            return
+        else:
+            return NoCloudNetworkConfigParser.parse(network_data)
 
-        return NoCloudNetworkConfigParser.parse(network_data)
+        debian_net_config = self._get_meta_data().get('network-interfaces')
+        if debian_net_config:
+            return debiface.parse_v2(debian_net_config)

@@ -144,6 +144,15 @@ class GlobalOptions(conf_base.Options):
                 help='Set the password provided in the configuration. '
                      'If False or no password is provided, a random one '
                      'will be set'),
+            cfg.ListOpt(
+                'run_only_once_for', default=[],
+                help='List of plugin class paths that should only run once '
+                     'per machine, regardless of metadata instance id '
+                     'changes.'),
+            cfg.StrOpt(
+                'run_once_reset_serial', default=None,
+                help='If set, a clone-triggered run-once reset will occur '
+                     'only when the SMBIOS serial matches this value.'),
             cfg.StrOpt(
                 'first_logon_behaviour',
                 default=constant.CLEAR_TEXT_INJECTED_ONLY,
@@ -186,6 +195,8 @@ class GlobalOptions(conf_base.Options):
                     '.CreateUserPlugin',
                     'cloudbaseinit.plugins.common.networkconfig'
                     '.NetworkConfigPlugin',
+                    'cloudbaseinit.plugins.windows.runonce.'
+                    'RunOncePlugin',
                     'cloudbaseinit.plugins.windows.licensing'
                     '.WindowsLicensingPlugin',
                     'cloudbaseinit.plugins.common.sshpublickeys'

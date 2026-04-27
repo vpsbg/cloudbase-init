@@ -25,6 +25,7 @@ from cloudbaseinit.osutils import factory as osutils_factory
 from cloudbaseinit.plugins.common import base as plugins_base
 from cloudbaseinit.plugins import factory as plugins_factory
 from cloudbaseinit.utils import log as logging
+from cloudbaseinit.utils import runonce
 from cloudbaseinit import version
 
 
@@ -34,6 +35,13 @@ LOG = oslo_logging.getLogger(__name__)
 
 class InitManager(object):
     _PLUGINS_CONFIG_SECTION = 'Plugins'
+
+    @staticmethod
+    def _normalize_state_value(value):
+        if value is None:
+            return None
+        value = str(value).strip()
+        return value or None
 
     def _get_plugins_section(self, instance_id):
         if not instance_id:
@@ -49,18 +57,70 @@ class InitManager(object):
         osutils.set_config_value(plugin_name, status,
                                  self._get_plugins_section(instance_id))
 
+    def _get_run_once_plugin_status(self, osutils, plugin_path):
+        return osutils.get_config_value(plugin_path, runonce.RUN_ONCE_SECTION)
+
+    def _set_run_once_plugin_status(self, osutils, plugin_path, status):
+        osutils.set_config_value(plugin_path, status, runonce.RUN_ONCE_SECTION)
+
+    def _track_metadata_instance_id(self, osutils, instance_id):
+        current_instance_id = self._normalize_state_value(instance_id)
+        if not current_instance_id:
+            LOG.debug("Metadata instance id not available for change "
+                      "tracking")
+            return
+
+        saved_instance_id = self._normalize_state_value(
+            osutils.get_config_value(runonce.SAVED_METADATA_INSTANCE_ID_KEY,
+                                     runonce.RUN_ONCE_SECTION))
+
+        if saved_instance_id:
+            if current_instance_id.casefold() != saved_instance_id.casefold():
+                LOG.info("Metadata instance id changed. Previous=%s "
+                         "Current=%s", saved_instance_id, current_instance_id)
+            else:
+                LOG.debug("Metadata instance id unchanged: %s",
+                          current_instance_id)
+        else:
+            LOG.debug("No saved metadata instance id found. Treating "
+                      "current metadata instance id as the first observed "
+                      "value: %s", current_instance_id)
+
+        if saved_instance_id != current_instance_id:
+            osutils.set_config_value(runonce.SAVED_METADATA_INSTANCE_ID_KEY,
+                                     current_instance_id,
+                                     runonce.RUN_ONCE_SECTION)
+            LOG.debug("Stored metadata instance id for future comparisons: "
+                      "%s", current_instance_id)
+
     def _exec_plugin(self, osutils, service, plugin, instance_id, shared_data):
         plugin_name = plugin.get_name()
+        plugin_path = runonce.get_plugin_class_path(plugin)
+        run_once_plugins = runonce.get_run_once_plugins()
+        run_once_status = None
 
         reboot_required = None
         success = True
         status = None
-        if instance_id is not None:
+        if plugin_path in run_once_plugins:
+            run_once_status = self._get_run_once_plugin_status(
+                osutils, plugin_path)
+        if run_once_status == plugins_base.PLUGIN_EXECUTION_DONE:
+            LOG.debug("Plugin '%s' is configured to run only once and "
+                      "execution already done, skipping. Plugin path: %s",
+                      plugin_name, plugin_path)
+        elif instance_id is not None:
             status = self._get_plugin_status(osutils, instance_id, plugin_name)
         if status == plugins_base.PLUGIN_EXECUTION_DONE:
             LOG.debug('Plugin \'%s\' execution already done, skipping',
                       plugin_name)
+        elif run_once_status == plugins_base.PLUGIN_EXECUTION_DONE:
+            pass
         else:
+            if plugin_path in run_once_plugins:
+                LOG.debug("Plugin '%s' is configured to run only once and "
+                          "is currently eligible to execute. Plugin path: "
+                          "%s", plugin_name, plugin_path)
             LOG.info('Executing plugin \'%s\'', plugin_name)
             try:
                 (status, reboot_required) = plugin.execute(service,
@@ -68,6 +128,12 @@ class InitManager(object):
                 if instance_id is not None:
                     self._set_plugin_status(osutils, instance_id, plugin_name,
                                             status)
+                if plugin_path in run_once_plugins and status is not None:
+                    self._set_run_once_plugin_status(
+                        osutils, plugin_path,
+                        plugins_base.PLUGIN_EXECUTION_DONE)
+                    LOG.debug("Stored run-once completion for plugin '%s' "
+                              "(%s)", plugin_name, plugin_path)
             except Exception as ex:
                 LOG.error('plugin \'%(plugin_name)s\' failed with error '
                           '\'%(ex)s\'', {'plugin_name': plugin_name, 'ex': ex})
@@ -200,6 +266,7 @@ class InitManager(object):
 
             instance_id = service.get_instance_id()
             LOG.debug('Instance id: %s', instance_id)
+            self._track_metadata_instance_id(osutils, instance_id)
 
             try:
                 stage_success, reboot_required = self._handle_plugins_stage(

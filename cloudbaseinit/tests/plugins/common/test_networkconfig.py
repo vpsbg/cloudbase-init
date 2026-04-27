@@ -206,6 +206,26 @@ class TestNetworkConfigPlugin(unittest.TestCase):
             self._network_details.pop()
         self._partial_test_execute_network_details_v1()
 
+    def test_execute_ipv6_only(self):
+        for _ in range(self._count - 1):
+            self._network_adapters.pop()
+            self._network_details.pop()
+
+        nic = self._network_details[0]
+        self._network_details[0] = network_model.NetworkDetails(
+            nic.name,
+            nic.mac,
+            None,
+            nic.address6,
+            None,
+            nic.netmask6,
+            nic.broadcast,
+            None,
+            nic.gateway6,
+            nic.dnsnameservers
+        )
+        self._partial_test_execute_network_details_v1()
+
     def test_execute_multiple(self):
         self._partial_test_execute_network_details_v1()
 
@@ -458,9 +478,11 @@ class TestNetworkConfigPlugin(unittest.TestCase):
             any_order=False)
 
         ip_address, prefix_len = mock.sentinel.address_cidr1.split("/")
-        mock_os_utils.set_static_network_config.assert_called_once_with(
-            mock.sentinel.link_id1, ip_address, prefix_len,
-            mock.sentinel.gateway1, expected_dns_list)
+        mock_os_utils.set_static_network_configs.assert_called_once_with(
+            mock.sentinel.link_id1,
+            [{"address": ip_address, "prefix_len": prefix_len,
+              "gateway": mock.sentinel.gateway1}],
+            expected_dns_list)
 
     def test_execute_network_details_v2(self):
         self._test_execute_network_details_v2()
@@ -473,3 +495,117 @@ class TestNetworkConfigPlugin(unittest.TestCase):
 
     def test_execute_network_details_v2_ipv6_dns_list(self):
         self._test_execute_network_details_v2(both_ipv6_dns_list=True)
+
+    @mock.patch("cloudbaseinit.osutils.factory.get_os_utils")
+    def test_execute_network_details_v2_multiple_addresses(self,
+                                                           mock_get_os_utils):
+        link = network_model.Link(
+            id="eth0",
+            name="eth0",
+            type=network_model.LINK_TYPE_PHYSICAL,
+            enabled=None,
+            mac_address=None,
+            mtu=None,
+            bond=None,
+            vlan_link=None,
+            vlan_id=None)
+        route = network_model.Route(
+            network_cidr=u"0.0.0.0/0",
+            gateway=u"172.16.0.1")
+        networks = [
+            network_model.Network(
+                link="eth0",
+                address_cidr=u"91.92.66.16/32",
+                dns_nameservers=["1.1.1.1", "9.9.9.9"],
+                routes=[route]),
+            network_model.Network(
+                link="eth0",
+                address_cidr=u"91.92.66.10/32",
+                dns_nameservers=["1.1.1.1", "9.9.9.9"],
+                routes=[]),
+            network_model.Network(
+                link="eth0",
+                address_cidr=u"87.120.37.168/32",
+                dns_nameservers=["1.1.1.1", "9.9.9.9"],
+                routes=[]),
+        ]
+        network_details = network_model.NetworkDetailsV2(
+            links=[link], networks=networks, services=[])
+        service = mock.Mock()
+        service.get_network_details_v2.return_value = network_details
+
+        mock_os_utils = mock.Mock()
+        mock_os_utils.get_network_adapters.return_value = [
+            ("Ethernet", "00:00:00:00:00:01")]
+        mock_os_utils.get_network_adapter_name_by_mac_address.return_value = (
+            "Ethernet")
+        mock_get_os_utils.return_value = mock_os_utils
+
+        plugin = networkconfig.NetworkConfigPlugin()
+        plugin.execute(service, {})
+
+        mock_os_utils.rename_network_adapter.assert_not_called()
+        mock_os_utils.enable_network_adapter.assert_not_called()
+        mock_os_utils.set_static_network_configs.assert_called_once_with(
+            "Ethernet",
+            [
+                {"address": "91.92.66.16", "prefix_len": "32",
+                 "gateway": "172.16.0.1"},
+                {"address": "91.92.66.10", "prefix_len": "32",
+                 "gateway": None},
+                {"address": "87.120.37.168", "prefix_len": "32",
+                 "gateway": None},
+            ],
+            ["1.1.1.1", "9.9.9.9"])
+
+    @mock.patch("cloudbaseinit.osutils.factory.get_os_utils")
+    def test_execute_network_details_v2_missing_macs_multiple_links(
+            self, mock_get_os_utils):
+        links = [
+            network_model.Link(
+                id="eth0", name="eth0",
+                type=network_model.LINK_TYPE_PHYSICAL, enabled=None,
+                mac_address=None, mtu=None, bond=None, vlan_link=None,
+                vlan_id=None),
+            network_model.Link(
+                id="eth1", name="eth1",
+                type=network_model.LINK_TYPE_PHYSICAL, enabled=None,
+                mac_address=None, mtu=None, bond=None, vlan_link=None,
+                vlan_id=None),
+        ]
+        networks = [
+            network_model.Network(
+                link="eth0", address_cidr=u"192.0.2.10/32",
+                dns_nameservers=[], routes=[]),
+            network_model.Network(
+                link="eth1", address_cidr=u"10.0.0.10/24",
+                dns_nameservers=[], routes=[]),
+        ]
+        service = mock.Mock()
+        service.get_network_details_v2.return_value = (
+            network_model.NetworkDetailsV2(
+                links=links, networks=networks, services=[]))
+
+        mock_os_utils = mock.Mock()
+        mock_os_utils.get_network_adapters.return_value = [
+            ("Ethernet", "00:00:00:00:00:01"),
+            ("eth0", "00:00:00:00:00:02"),
+        ]
+        mock_get_os_utils.return_value = mock_os_utils
+
+        plugin = networkconfig.NetworkConfigPlugin()
+        plugin.execute(service, {})
+
+        mock_os_utils.rename_network_adapter.assert_not_called()
+        mock_os_utils.set_static_network_configs.assert_has_calls([
+            mock.call(
+                "eth0",
+                [{"address": "192.0.2.10", "prefix_len": "32",
+                  "gateway": None}],
+                []),
+            mock.call(
+                "Ethernet",
+                [{"address": "10.0.0.10", "prefix_len": "24",
+                  "gateway": None}],
+                []),
+        ])

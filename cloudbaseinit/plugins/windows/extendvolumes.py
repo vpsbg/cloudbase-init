@@ -20,6 +20,8 @@ CONF = cloudbaseinit_conf.CONF
 
 
 class ExtendVolumesPlugin(base.BasePlugin):
+    execution_stage = base.PLUGIN_STAGE_PRE_METADATA_DISCOVERY
+
     def _get_volumes_to_extend(self):
         if CONF.volumes_to_extend is not None:
             return list(map(int, CONF.volumes_to_extend))

@@ -85,3 +85,98 @@ class TestInterfacesParser(unittest.TestCase):
 
     def test_parse(self):
         self._test_parse_nics()
+
+    def test_parse_split_inet6_stanza(self):
+        data = """
+auto eth0
+iface eth0 inet static
+    address 192.0.2.10
+    netmask 255.255.255.255
+    gateway 172.16.0.1
+    dns-nameservers 1.1.1.1 9.9.9.9
+iface eth0 inet6 static
+    address 2001:db8:589::
+    netmask 64
+    gateway fe80::1
+    dns-nameservers 1.1.1.1 9.9.9.9
+        """
+
+        nic = network_model.NetworkDetails(
+            "eth0",
+            None,
+            "192.0.2.10",
+            "2001:db8:589::",
+            "255.255.255.255",
+            "64",
+            None,
+            "172.16.0.1",
+            "fe80::1",
+            ["1.1.1.1", "9.9.9.9"]
+        )
+
+        self.assertEqual([nic], debiface.parse(data))
+
+    def test_parse_v2_multiple_addresses(self):
+        data = """
+auto eth0
+iface eth0 inet static
+    address 91.92.66.16
+    netmask 255.255.255.255
+    gateway 172.16.0.1
+    dns-nameservers 1.1.1.1 9.9.9.9
+iface eth0 inet static
+    address 91.92.66.10
+    netmask 255.255.255.255
+    dns-nameservers 1.1.1.1 9.9.9.9
+iface eth0 inet static
+    address 87.120.37.168
+    netmask 255.255.255.255
+    dns-nameservers 1.1.1.1 9.9.9.9
+iface eth0 inet6 static
+    address 2a00:1728:f:0589::
+    netmask 64
+    gateway fe80::1
+    dns-nameservers 1.1.1.1 9.9.9.9
+        """
+        expected_link = network_model.Link(
+            id="eth0",
+            name="eth0",
+            type=network_model.LINK_TYPE_PHYSICAL,
+            enabled=None,
+            mac_address=None,
+            mtu=None,
+            bond=None,
+            vlan_link=None,
+            vlan_id=None)
+        expected_networks = [
+            network_model.Network(
+                link="eth0",
+                address_cidr="91.92.66.16/32",
+                dns_nameservers=["1.1.1.1", "9.9.9.9"],
+                routes=[network_model.Route(
+                    network_cidr="0.0.0.0/0",
+                    gateway="172.16.0.1")]),
+            network_model.Network(
+                link="eth0",
+                address_cidr="91.92.66.10/32",
+                dns_nameservers=["1.1.1.1", "9.9.9.9"],
+                routes=[]),
+            network_model.Network(
+                link="eth0",
+                address_cidr="87.120.37.168/32",
+                dns_nameservers=["1.1.1.1", "9.9.9.9"],
+                routes=[]),
+            network_model.Network(
+                link="eth0",
+                address_cidr="2a00:1728:f:0589::/64",
+                dns_nameservers=["1.1.1.1", "9.9.9.9"],
+                routes=[network_model.Route(
+                    network_cidr="::/0",
+                    gateway="fe80::1")]),
+        ]
+
+        network_details = debiface.parse_v2(data)
+
+        self.assertEqual([expected_link], network_details.links)
+        self.assertEqual(expected_networks, network_details.networks)
+        self.assertEqual([], network_details.services)

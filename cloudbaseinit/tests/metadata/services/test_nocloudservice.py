@@ -528,6 +528,7 @@ class TestNoCloudConfigDriveService(unittest.TestCase):
                                              mock_get_cache_data):
         if expected_result[1]:
             mock_get_cache_data.side_effect = [input]
+            self._config_drive._meta_data = {'network-interfaces': None}
         else:
             mock_get_cache_data.return_value = input
         with self.snatcher:
@@ -537,6 +538,26 @@ class TestNoCloudConfigDriveService(unittest.TestCase):
 
         mock_get_cache_data.assert_called_with(
             "network-config", decode=True)
+
+    @mock.patch(MODULE_PATH + '.NoCloudConfigDriveService._get_meta_data')
+    @mock.patch(MODULE_PATH + '.NoCloudConfigDriveService._get_cache_data')
+    def test_network_details_v2_falls_back_to_debian_config(
+            self, mock_get_cache_data, mock_get_meta_data):
+        data = """
+auto eth0
+iface eth0 inet static
+    address 192.0.2.10
+    netmask 255.255.255.255
+        """
+        mock_get_cache_data.side_effect = base.NotExistingMetadataException(
+            'exc')
+        mock_get_meta_data.return_value = {'network-interfaces': data}
+
+        result = self._config_drive.get_network_details_v2()
+
+        self.assertEqual(1, len(result.links))
+        self.assertEqual(1, len(result.networks))
+        self.assertEqual('192.0.2.10/32', result.networks[0].address_cidr)
 
     def test_to_network_details_v2(self):
         date = "2013-04-04"

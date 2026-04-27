@@ -12,6 +12,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import collections
 import re
 
 import netaddr
@@ -146,6 +147,7 @@ class NetworkConfigPlugin(plugin_base.BasePlugin):
             name = osutils.get_network_adapter_name_by_mac_address(mac)
             LOG.info("Configuring network adapter: %s", name)
 
+            reboot = False
             # In v6 only case, nic.address and nic.netmask could be unset
             if nic.address and nic.netmask:
                 reboot = osutils.set_static_network_config(
@@ -182,29 +184,90 @@ class NetworkConfigPlugin(plugin_base.BasePlugin):
                 {"name": link.name, "mtu": link.mtu})
             osutils.set_network_adapter_mtu(link.name, link.mtu)
 
-        LOG.debug(
-            "Enable network adapter \"%(name)s\": %(enabled)s",
-            {"name": link.name, "enabled": link.enabled})
-        osutils.enable_network_adapter(link.name, link.enabled)
+        if link.enabled is not None:
+            LOG.debug(
+                "Enable network adapter \"%(name)s\": %(enabled)s",
+                {"name": link.name, "enabled": link.enabled})
+            osutils.enable_network_adapter(link.name, link.enabled)
+
+    @staticmethod
+    def _get_link_adapter(link, network_adapters, used_macs):
+        available_adapters = [
+            adapter for adapter in network_adapters
+            if adapter[1] not in used_macs]
+        for adapter in available_adapters:
+            if adapter[0] == link.name:
+                return adapter
+
+        try:
+            idx = _name2idx(link.name)
+        except exception.CloudbaseInitException:
+            idx = None
+
+        if idx is not None:
+            if idx < len(network_adapters):
+                adapter = network_adapters[idx]
+                if adapter[1] not in used_macs:
+                    return adapter
+            if idx < len(available_adapters):
+                return available_adapters[idx]
+
+        if available_adapters:
+            return available_adapters[0]
 
     @staticmethod
     def _process_physical_links(osutils, network_details):
+        link_name_map = {}
         physical_links = [
             link for link in network_details.links if
             link.type == network_model.LINK_TYPE_PHYSICAL]
+        network_adapters = None
+        used_macs = set()
 
         for link in physical_links:
-            adapter_name = osutils.get_network_adapter_name_by_mac_address(
-                link.mac_address)
+            if link.mac_address:
+                mac_address = link.mac_address
+                adapter_name = osutils.get_network_adapter_name_by_mac_address(
+                    mac_address)
+                used_macs.add(mac_address)
 
+                if adapter_name != link.name:
+                    LOG.info(
+                        "Renaming network adapter \"%(old_name)s\" to "
+                        "\"%(new_name)s\"",
+                        {"old_name": adapter_name, "new_name": link.name})
+                    osutils.rename_network_adapter(adapter_name, link.name)
+
+                link_name_map[link.name] = link.name
+                NetworkConfigPlugin._process_link_common(osutils, link)
+                continue
+
+            if network_adapters is None:
+                network_adapters = sorted(
+                    osutils.get_network_adapters(), key=lambda arg: arg[0])
+            adapter = NetworkConfigPlugin._get_link_adapter(
+                link, network_adapters, used_macs)
+            if adapter:
+                adapter_name, mac_address = adapter
+            else:
+                adapter_name = mac_address = None
+            if not mac_address:
+                LOG.warning(
+                    "Missing MAC address for network adapter \"%s\"",
+                    link.name)
+                continue
+            used_macs.add(mac_address)
+            link_name_map[link.name] = adapter_name
             if adapter_name != link.name:
                 LOG.info(
-                    "Renaming network adapter \"%(old_name)s\" to "
-                    "\"%(new_name)s\"",
-                    {"old_name": adapter_name, "new_name": link.name})
-                osutils.rename_network_adapter(adapter_name, link.name)
+                    "Using network adapter \"%(adapter_name)s\" for "
+                    "metadata link \"%(link_name)s\"",
+                    {"adapter_name": adapter_name, "link_name": link.name})
 
-            NetworkConfigPlugin._process_link_common(osutils, link)
+            NetworkConfigPlugin._process_link_common(
+                osutils, link._replace(name=adapter_name))
+
+        return link_name_map
 
     @staticmethod
     def _process_bond_links(osutils, network_details):
@@ -254,36 +317,59 @@ class NetworkConfigPlugin(plugin_base.BasePlugin):
         return (ipv4_nameservers, ipv6_nameservers)
 
     @staticmethod
-    def _process_networks(osutils, network_details):
+    def _get_network_gateway(net):
+        default_gw_route = [
+            r for r in net.routes if
+            netaddr.IPNetwork(r.network_cidr).prefixlen == 0]
+        if default_gw_route:
+            return default_gw_route[0].gateway
+
+    @staticmethod
+    def _get_network_nameservers(ip_address, net, ipv4_ns, ipv6_ns):
+        nameservers = net.dns_nameservers
+        if nameservers:
+            return nameservers
+        if netaddr.valid_ipv6(ip_address):
+            return ipv6_ns
+        return ipv4_ns
+
+    @staticmethod
+    def _process_networks(osutils, network_details, link_name_map=None):
         reboot_required = False
         ipv4_ns, ipv6_ns = NetworkConfigPlugin._get_default_dns_nameservers(
             network_details)
+        network_groups = collections.OrderedDict()
+        link_name_map = link_name_map or {}
 
         for net in network_details.networks:
             ip_address, prefix_len = net.address_cidr.split("/")
+            ip_version = netaddr.IPAddress(ip_address).version
+            link_name = link_name_map.get(net.link, net.link)
+            group_key = (link_name, ip_version)
+            group = network_groups.setdefault(
+                group_key, {"configs": [], "nameservers": []})
+            gateway = NetworkConfigPlugin._get_network_gateway(net)
+            nameservers = NetworkConfigPlugin._get_network_nameservers(
+                ip_address, net, ipv4_ns, ipv6_ns)
+            if nameservers and not group["nameservers"]:
+                group["nameservers"] = nameservers
 
-            gateway = None
-            default_gw_route = [
-                r for r in net.routes if
-                netaddr.IPNetwork(r.network_cidr).prefixlen == 0]
-            if default_gw_route:
-                gateway = default_gw_route[0].gateway
-
-            nameservers = net.dns_nameservers
-            if not nameservers:
-                if netaddr.valid_ipv6(ip_address):
-                    nameservers = ipv6_ns
-                else:
-                    nameservers = ipv4_ns
+            group["configs"].append({
+                "address": ip_address,
+                "prefix_len": prefix_len,
+                "gateway": gateway,
+            })
 
             LOG.info(
-                "Setting static IP configuration on network adapter "
+                "Preparing static IP configuration on network adapter "
                 "\"%(name)s\". IP: %(ip)s, prefix length: %(prefix_len)s, "
                 "gateway: %(gateway)s, dns: %(dns)s",
-                {"name": net.link, "ip": ip_address, "prefix_len": prefix_len,
+                {"name": link_name, "ip": ip_address, "prefix_len": prefix_len,
                  "gateway": gateway, "dns": nameservers})
-            reboot = osutils.set_static_network_config(
-                net.link, ip_address, prefix_len, gateway, nameservers)
+
+        for (link_name, _ip_version), group in network_groups.items():
+            reboot = osutils.set_static_network_configs(
+                link_name, group["configs"], group["nameservers"])
             reboot_required = reboot or reboot_required
 
         return reboot_required
@@ -292,12 +378,12 @@ class NetworkConfigPlugin(plugin_base.BasePlugin):
     def _process_network_details_v2(network_details):
         osutils = osutils_factory.get_os_utils()
 
-        NetworkConfigPlugin._process_physical_links(
+        link_name_map = NetworkConfigPlugin._process_physical_links(
             osutils, network_details)
         NetworkConfigPlugin._process_bond_links(osutils, network_details)
         NetworkConfigPlugin._process_vlan_links(osutils, network_details)
         reboot_required = NetworkConfigPlugin._process_networks(
-            osutils, network_details)
+            osutils, network_details, link_name_map)
 
         return plugin_base.PLUGIN_EXECUTION_DONE, reboot_required
 

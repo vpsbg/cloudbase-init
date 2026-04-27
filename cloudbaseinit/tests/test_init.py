@@ -136,6 +136,98 @@ class TestInitManager(unittest.TestCase):
     def test_exec_plugin(self):
         self._test_exec_plugin(base.PLUGIN_EXECUTE_ON_NEXT_BOOT)
 
+    @testutils.ConfPatcher(
+        'run_only_once_for',
+        ['cloudbaseinit.plugins.common.sethostname.SetHostNamePlugin'])
+    @mock.patch('cloudbaseinit.utils.runonce.get_plugin_class_path')
+    @mock.patch('cloudbaseinit.init.InitManager._get_run_once_plugin_status')
+    def test_exec_plugin_run_once_done(self, mock_get_run_once_plugin_status,
+                                       mock_get_plugin_class_path):
+        fake_name = 'fake name'
+        mock_get_plugin_class_path.return_value = (
+            'cloudbaseinit.plugins.common.sethostname.SetHostNamePlugin')
+        mock_get_run_once_plugin_status.return_value = (
+            base.PLUGIN_EXECUTION_DONE)
+        self.plugin.get_name.return_value = fake_name
+
+        response = self._init._exec_plugin(osutils=self.osutils,
+                                           service='fake service',
+                                           plugin=self.plugin,
+                                           instance_id='fake id',
+                                           shared_data='shared data')
+
+        mock_get_run_once_plugin_status.assert_called_once_with(
+            self.osutils,
+            'cloudbaseinit.plugins.common.sethostname.SetHostNamePlugin')
+        self.assertFalse(self.plugin.execute.called)
+        self.assertEqual((True, None), response)
+
+    @testutils.ConfPatcher(
+        'run_only_once_for',
+        ['cloudbaseinit.plugins.common.sethostname.SetHostNamePlugin'])
+    @mock.patch('cloudbaseinit.utils.runonce.get_plugin_class_path')
+    @mock.patch('cloudbaseinit.init.InitManager._get_run_once_plugin_status')
+    @mock.patch('cloudbaseinit.init.InitManager._set_run_once_plugin_status')
+    @mock.patch('cloudbaseinit.init.InitManager._get_plugin_status')
+    @mock.patch('cloudbaseinit.init.InitManager._set_plugin_status')
+    def test_exec_plugin_run_once(self, mock_set_plugin_status,
+                                  mock_get_plugin_status,
+                                  mock_set_run_once_plugin_status,
+                                  mock_get_run_once_plugin_status,
+                                  mock_get_plugin_class_path):
+        fake_name = 'fake name'
+        fake_path = 'cloudbaseinit.plugins.common.sethostname.SetHostNamePlugin'
+        mock_get_plugin_class_path.return_value = fake_path
+        mock_get_run_once_plugin_status.return_value = None
+        mock_get_plugin_status.return_value = None
+        self.plugin.get_name.return_value = fake_name
+        self.plugin.execute.return_value = (base.PLUGIN_EXECUTION_DONE, True)
+
+        response = self._init._exec_plugin(osutils=self.osutils,
+                                           service='fake service',
+                                           plugin=self.plugin,
+                                           instance_id='fake id',
+                                           shared_data='shared data')
+
+        self.plugin.execute.assert_called_once_with('fake service',
+                                                    'shared data')
+        mock_set_plugin_status.assert_called_once_with(
+            self.osutils, 'fake id', fake_name, base.PLUGIN_EXECUTION_DONE)
+        mock_set_run_once_plugin_status.assert_called_once_with(
+            self.osutils, fake_path, base.PLUGIN_EXECUTION_DONE)
+        self.assertEqual((True, True), response)
+
+    def test_track_metadata_instance_id_first_seen(self):
+        self.osutils.get_config_value.return_value = None
+
+        with testutils.LogSnatcher('cloudbaseinit.init') as snatcher:
+            self._init._track_metadata_instance_id(self.osutils, 'instance-1')
+
+        self.osutils.get_config_value.assert_called_once_with(
+            'MetadataInstanceId', 'RunOnce')
+        self.osutils.set_config_value.assert_called_once_with(
+            'MetadataInstanceId', 'instance-1', 'RunOnce')
+        self.assertEqual([
+            'No saved metadata instance id found. Treating current metadata '
+            'instance id as the first observed value: instance-1',
+            'Stored metadata instance id for future comparisons: instance-1',
+        ], snatcher.output)
+
+    def test_track_metadata_instance_id_changed(self):
+        self.osutils.get_config_value.return_value = 'instance-1'
+
+        with testutils.LogSnatcher('cloudbaseinit.init') as snatcher:
+            self._init._track_metadata_instance_id(self.osutils, 'instance-2')
+
+        self.osutils.set_config_value.assert_called_once_with(
+            'MetadataInstanceId', 'instance-2', 'RunOnce')
+        self.assertEqual([
+            'Metadata instance id changed. Previous=instance-1 '
+            'Current=instance-2',
+            'Stored metadata instance id for future comparisons: '
+            'instance-2',
+        ], snatcher.output)
+
     def _test_check_plugin_os_requirements(self, requirements):
         sys.platform = 'win32'
         fake_name = 'fake name'
@@ -248,6 +340,7 @@ class TestInitManager(unittest.TestCase):
         fake_plugin = mock.MagicMock()
         mock_load_plugins.return_value = [fake_plugin]
         mock_get_os_utils.return_value = self.osutils
+        self.osutils.get_config_value.return_value = None
         mock_get_metadata_service.return_value = fake_service
         fake_service.get_name.return_value = name
         fake_service.get_instance_id.return_value = instance_id
@@ -291,6 +384,10 @@ class TestInitManager(unittest.TestCase):
             'Cloudbase-Init version: %s' % version,
             'Metadata service loaded: %r' % name,
             'Instance id: %s' % instance_id,
+            'No saved metadata instance id found. Treating current metadata '
+            'instance id as the first observed value: %s' % instance_id,
+            'Stored metadata instance id for future comparisons: %s' %
+            instance_id,
         ]
         if CONF.metadata_report_provisioning_started:
             expected_logging.insert(2, 'Reporting provisioning started')

@@ -88,6 +88,13 @@ class BaseOpenStackService(base.BaseMetadataService):
         return list(set((key.strip() for key in public_keys)))
 
     def get_network_details(self):
+        content = self._get_debian_network_config()
+        if content is None:
+            return None
+
+        return debiface.parse(content)
+
+    def _get_debian_network_config(self):
         network_config = self._get_meta_data().get('network_config')
         if not network_config:
             return None
@@ -97,9 +104,7 @@ class BaseOpenStackService(base.BaseMetadataService):
 
         content_name = network_config[key].rsplit("/", 1)[-1]
         content = self.get_content(content_name)
-        content = encoding.get_as_string(content)
-
-        return debiface.parse(content)
+        return encoding.get_as_string(content)
 
     @staticmethod
     def _parse_network_data_links(links_data):
@@ -235,6 +240,9 @@ class BaseOpenStackService(base.BaseMetadataService):
             network_data = self._get_network_data()
         except base.NotExistingMetadataException:
             LOG.info("V2 network metadata not found")
+            content = self._get_debian_network_config()
+            if content is not None:
+                return debiface.parse_v2(content)
             return
 
         links = self._parse_network_data_links(

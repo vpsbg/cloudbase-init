@@ -28,7 +28,9 @@ STAGE = {
         'cloudbaseinit.plugins.windows.ntpclient.NTPClientPlugin'
     ],
     base.PLUGIN_STAGE_PRE_METADATA_DISCOVERY: [
-        'cloudbaseinit.plugins.common.mtu.MTUPlugin'
+        'cloudbaseinit.plugins.common.mtu.MTUPlugin',
+        'cloudbaseinit.plugins.windows.runonce.RunOncePlugin',
+        'cloudbaseinit.plugins.windows.extendvolumes.ExtendVolumesPlugin'
     ],
     base.PLUGIN_STAGE_MAIN: [
         'cloudbaseinit.plugins.common.sethostname.SetHostNamePlugin',
@@ -37,7 +39,6 @@ STAGE = {
         'cloudbaseinit.plugins.windows.licensing.WindowsLicensingPlugin',
         'cloudbaseinit.plugins.common.sshpublickeys.'
         'SetUserSSHPublicKeysPlugin',
-        'cloudbaseinit.plugins.windows.extendvolumes.ExtendVolumesPlugin',
         'cloudbaseinit.plugins.common.userdata.UserDataPlugin',
         'cloudbaseinit.plugins.common.setuserpassword.'
         'SetUserPasswordPlugin',

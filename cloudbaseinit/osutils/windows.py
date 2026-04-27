@@ -939,6 +939,53 @@ class WindowsUtils(base.BaseOSUtils):
         return reboot_required
 
     @staticmethod
+    def _set_static_network_configs_legacy(name, network_configs,
+                                           dnsnameservers):
+        if netaddr.valid_ipv6(network_configs[0]["address"]):
+            LOG.warning("Setting IPv6 info not available on this system")
+            return False
+
+        addresses = []
+        netmasks = []
+        gateway = None
+        for network_config in network_configs:
+            address = network_config["address"]
+            ip_network = netaddr.IPNetwork(
+                u"%s/%s" % (address, network_config["prefix_len"]))
+            addresses.append(address)
+            netmasks.append(str(ip_network.netmask))
+            gateway = gateway or network_config.get("gateway")
+
+        adapter_config = WindowsUtils._get_network_adapter(name).associators(
+            wmi_result_class='Win32_NetworkAdapterConfiguration')[0]
+
+        LOG.debug("Setting static IP addresses")
+        (ret_val,) = adapter_config.EnableStatic(addresses, netmasks)
+        if ret_val > 1:
+            raise exception.CloudbaseInitException(
+                "Cannot set static IP address on network adapter: %d" %
+                ret_val)
+        reboot_required = (ret_val == 1)
+
+        if gateway:
+            LOG.debug("Setting static gateways")
+            (ret_val,) = adapter_config.SetGateways([gateway], [1])
+            if ret_val > 1:
+                raise exception.CloudbaseInitException(
+                    "Cannot set gateway on network adapter: %d" % ret_val)
+            reboot_required = reboot_required or ret_val == 1
+
+        if dnsnameservers:
+            LOG.debug("Setting static DNS servers")
+            (ret_val,) = adapter_config.SetDNSServerSearchOrder(dnsnameservers)
+            if ret_val > 1:
+                raise exception.CloudbaseInitException(
+                    "Cannot set DNS on network adapter: %d" % ret_val)
+            reboot_required = reboot_required or ret_val == 1
+
+        return reboot_required
+
+    @staticmethod
     def _fix_network_adapter_dhcp(interface_name,
                                   enable_dhcp,
                                   address_family):
@@ -988,12 +1035,110 @@ class WindowsUtils(base.BaseOSUtils):
             adapter.Disable()
 
     @staticmethod
-    def _set_static_network_config(name, address, prefix_len, gateway):
-        if netaddr.valid_ipv6(address):
-            family = AF_INET6
-        else:
-            family = AF_INET
+    def _quote_powershell(value):
+        return str(value).replace("'", "''")
 
+    @staticmethod
+    def _requires_onlink_route(address, prefix_len, gateway):
+        network = netaddr.IPNetwork(u"%s/%s" % (address, prefix_len))
+        gateway_address = netaddr.IPAddress(gateway)
+
+        if gateway_address.version == 6:
+            link_local_net = netaddr.IPNetwork(u"fe80::/10")
+            if gateway_address in link_local_net:
+                return False
+
+        return gateway_address not in network
+
+    def execute_powershell_command(self, command, sysnative=True):
+        base_dir = self._get_system_dir(sysnative)
+        powershell_path = os.path.join(base_dir,
+                                       'WindowsPowerShell\\v1.0\\'
+                                       'powershell.exe')
+
+        args = [powershell_path]
+        if not self.is_nano_server():
+            args += ['-ExecutionPolicy', 'RemoteSigned', '-NonInteractive',
+                     '-Command']
+        else:
+            args += ['-Command']
+        args.append(command)
+
+        return self.execute_process(args, shell=False)
+
+    def get_smbios_uuid_serial(self):
+        command = (
+            "$product = Get-WmiObject Win32_ComputerSystemProduct; "
+            "$uuid = if ($product.UUID) { $product.UUID } else { '' }; "
+            "$serial = if ($product.IdentifyingNumber) "
+            "{ $product.IdentifyingNumber } else { '' }; "
+            "[Console]::Out.Write($uuid + \"`n\" + $serial)"
+        )
+        (out, err, ret_val) = self.execute_powershell_command(command)
+        if ret_val:
+            raise exception.CloudbaseInitException(
+                'Failed to get SMBIOS data.\nOutput: %(out)s\nError: %(err)s'
+                % {'out': out, 'err': err})
+
+        if not isinstance(out, str):
+            out = out.decode('utf-8', errors='ignore')
+        lines = out.replace('\r', '').split('\n')
+        uuid = lines[0].strip() if lines else None
+        serial = lines[1].strip() if len(lines) > 1 else None
+        return uuid or None, serial or None
+
+    def _add_static_network_route(self, name, destination_prefix, next_hop,
+                                  route_metric=None):
+        command = (
+            "New-NetRoute -InterfaceAlias '{name}' "
+            "-DestinationPrefix '{destination_prefix}' "
+            "-NextHop '{next_hop}' -ErrorAction Stop"
+        ).format(
+            name=self._quote_powershell(name),
+            destination_prefix=self._quote_powershell(destination_prefix),
+            next_hop=self._quote_powershell(next_hop)
+        )
+        if route_metric is not None:
+            command += " -RouteMetric %d" % route_metric
+
+        LOG.debug(
+            "Adding route on adapter \"%(name)s\": %(destination_prefix)s "
+            "via %(next_hop)s",
+            {"name": name, "destination_prefix": destination_prefix,
+             "next_hop": next_hop})
+        (out, err, ret_val) = self.execute_powershell_command(command)
+        if ret_val:
+            raise exception.CloudbaseInitException(
+                'Failed to add route.\nOutput: %(out)s\nError: %(err)s' %
+                {'out': out, 'err': err})
+
+    def _set_static_network_gateway(self, name, address, prefix_len, gateway):
+        if not gateway:
+            return
+
+        if netaddr.valid_ipv6(address):
+            default_route = u"::/0"
+            host_route = u"%s/128" % gateway
+            onlink_next_hop = u"::"
+        else:
+            default_route = u"0.0.0.0/0"
+            host_route = u"%s/32" % gateway
+            onlink_next_hop = u"0.0.0.0"
+
+        if self._requires_onlink_route(address, prefix_len, gateway):
+            self._add_static_network_route(
+                name, host_route, onlink_next_hop, route_metric=1)
+
+        self._add_static_network_route(name, default_route, gateway)
+
+    @staticmethod
+    def _get_address_family(address):
+        if netaddr.valid_ipv6(address):
+            return AF_INET6
+        return AF_INET
+
+    @staticmethod
+    def _clear_static_network_config(name, family):
         # This is needed to avoid the error:
         # "Inconsistent parameters PolicyStore PersistentStore and
         # Dhcp Enabled"
@@ -1018,9 +1163,20 @@ class WindowsUtils(base.BaseOSUtils):
                 {"route": existing_route.DestinationPrefix, "name": name})
             existing_route.Delete_()
 
+        return conn
+
+    @staticmethod
+    def _add_static_network_address(conn, name, family, address, prefix_len):
         conn.MSFT_NetIPAddress.create(
             AddressFamily=family, InterfaceAlias=name, IPAddress=address,
-            PrefixLength=prefix_len, DefaultGateway=gateway)
+            PrefixLength=prefix_len)
+
+    @staticmethod
+    def _set_static_network_config(name, address, prefix_len, gateway):
+        family = WindowsUtils._get_address_family(address)
+        conn = WindowsUtils._clear_static_network_config(name, family)
+        WindowsUtils._add_static_network_address(
+            conn, name, family, address, prefix_len)
 
     def set_static_network_config(self, name, address, prefix_len_or_netmask,
                                   gateway, dnsnameservers):
@@ -1032,11 +1188,47 @@ class WindowsUtils(base.BaseOSUtils):
         if self.check_os_version(6, 2):
             self._set_static_network_config(
                 name, address, prefix_len, gateway)
+            self._set_static_network_gateway(
+                name, address, prefix_len, gateway)
             if len(dnsnameservers):
                 self._set_interface_dns(name, dnsnameservers)
+            return False
         else:
             return self._set_static_network_config_legacy(
                 name, address, netmask, gateway, dnsnameservers)
+
+    def set_static_network_configs(self, name, network_configs,
+                                   dnsnameservers):
+        if not network_configs:
+            return False
+
+        if self.check_os_version(6, 2):
+            family = self._get_address_family(network_configs[0]["address"])
+            conn = self._clear_static_network_config(name, family)
+            for network_config in network_configs:
+                ip_network = netaddr.IPNetwork(
+                    u"%s/%s" % (network_config["address"],
+                                network_config["prefix_len"]))
+                self._add_static_network_address(
+                    conn, name, family, network_config["address"],
+                    ip_network.prefixlen)
+
+            for network_config in network_configs:
+                gateway = network_config.get("gateway")
+                if gateway:
+                    ip_network = netaddr.IPNetwork(
+                        u"%s/%s" % (network_config["address"],
+                                    network_config["prefix_len"]))
+                    self._set_static_network_gateway(
+                        name, network_config["address"],
+                        ip_network.prefixlen, gateway)
+
+            if len(dnsnameservers):
+                self._set_interface_dns(name, dnsnameservers)
+            return False
+
+        return self._set_static_network_configs_legacy(
+            name, network_configs, dnsnameservers)
 
     def _get_network_team_manager(self):
         if self._network_team_manager:
