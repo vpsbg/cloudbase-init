@@ -24,6 +24,10 @@ transparency and reviewability.
 The goal is to keep the fork as close as possible to upstream while carrying a
 small set of targeted changes required by our environment.
 
+The active downstream patch branch is ``proxmox-provisioning-1.1.8``; it
+contains the Proxmox-oriented Windows provisioning changes on top of
+Cloudbase-Init 1.1.8.
+
 For the original project documentation and general Cloudbase-Init usage, please
 refer to the upstream repository.
 
